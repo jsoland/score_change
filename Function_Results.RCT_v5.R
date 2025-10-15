@@ -27,6 +27,31 @@ results.RCT<-function(score.file,plots="True",ests="True") {
 #DATA FILE    
 dat.s<-score.file  
 
+# ---- CONVERGENCE FLAGS (from CONV made in score.RCT) ----
+mg_ok  <- tryCatch(isTRUE(CONV$multiple_group$ok), error = function(e) NA)
+uni_ok <- tryCatch(isTRUE(CONV$unidim$ok),          error = function(e) NA)
+
+nonconv <- isFALSE(mg_ok) | isFALSE(uni_ok)
+
+conv_note <- if (isTRUE(nonconv)) {
+  paste0(
+    "NOTE: Non-convergence detected (",
+    paste(
+      c(if (isFALSE(mg_ok)) "multipleGroup" else NULL,
+        if (isFALSE(uni_ok)) "unidim" else NULL),
+      collapse = " & "
+    ),
+    "). Estimates may be unstable."
+  )
+} else {
+  NULL
+}
+
+# colors used throughout
+pt_err_color <- if (isTRUE(nonconv)) "red" else NA  # NA = use default
+text_color   <- if (isTRUE(nonconv)) "red" else NA
+
+
 #####################################################################
 # PLOTS (full replacement)
 #####################################################################
