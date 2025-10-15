@@ -192,26 +192,100 @@ for (obj_name in object_names) {
 mod <- paste(object_values, collapse = "\n")
 
 
-#CALIBRATE MIRT
-mod.est <- multipleGroup(
-  dat[, 1:(N*2)],
-  model = mod,
-  group = dat$group,
-  invariance = c(
-    "free_means", "free_variances", 
-    "slopes", "intercepts"), 
-  itemtype='graded', method='MHRM', SE = TRUE) 
-coef(mod.est, simplify=TRUE) # get item parameters
+## ---------- helpers ----------
+.get_conv <- function(fit, label) {
+  if (is.null(fit)) {
+    return(list(model = label, ok = FALSE, message = "fit is NULL", iterations = NA))
+  }
+  oi <- try(fit@OptimInfo, silent = TRUE)
+  ok <- try(isTRUE(oi$converged), silent = TRUE)
+  msg <- try(oi$message, silent = TRUE)
+  it  <- try(oi$iterations, silent = TRUE)
+  list(
+    model = label,
+    ok = if (inherits(ok, "try-error")) NA else ok,
+    message = if (inherits(msg, "try-error")) NA else msg,
+    iterations = if (inherits(it, "try-error")) NA else it
+  )
+}
 
-## CLEAN UNIDIM
-dat.T1<-dat[,c(1:N)]
-dat.T2<-dat[,c((N+1):(N*2))]
+## ---------- CALIBRATE MIRT (multiple-group) ----------
+mg_fit <- tryCatch(
+  multipleGroup(
+    dat[, 1:(N*2)],
+    model = mod,
+    group = dat$group,
+    invariance = c("free_means", "free_variances", "slopes", "intercepts"),
+    itemtype = "graded", method = "MHRM", SE = TRUE
+  ),
+  error = function(e) e
+)
+
+if (inherits(mg_fit, "error")) {
+  CONV <<- list(
+    call = match.call(),
+    settings = list(nc = nc, N = N, sampN = sampN, n = nrow(dat)),
+    grouping = as.list(table(dat$group)),
+    multiple_group = list(model = "multipleGroup", ok = FALSE, message = mg_fit$message, iterations = NA),
+    unidim = NULL,
+    timestamp = Sys.time()
+  )
+  message("multipleGroup failed: ", mg_fit$message)
+  return(invisible(NULL))
+}
+
+mg_conv <- .get_conv(mg_fit, "multipleGroup")
+
+# if it *ran* but did not converge, you can still proceed or return early—your choice.
+# Here, we proceed (since fscores often still work), but you could bail out:
+# if (isFALSE(mg_conv$ok)) { ... return(invisible(NULL)) }
+
+# keep original object name for the rest of your code
+mod.est <- mg_fit
+coef(mod.est, simplify = TRUE)  # get item parameters
+
+## ---------- CLEAN UNIDIM ----------
+dat.T1 <- dat[, c(1:N)]
+dat.T2 <- dat[, c((N+1):(N*2))]
 colnames(dat.T1) <- seq_along(dat.T1)
 colnames(dat.T2) <- seq_along(dat.T2)
-dat.U<-rbind(dat.T1,dat.T2)
+dat.U <- rbind(dat.T1, dat.T2)
 
-## CALIBRATE UNIDIM
-uni.mod <- mirt(dat.U[,(1:N)], 1, itemtype = "graded")
+## ---------- CALIBRATE UNIDIM ----------
+uni_fit <- tryCatch(
+  mirt(dat.U[, (1:N)], 1, itemtype = "graded"),
+  error = function(e) e
+)
+
+if (inherits(uni_fit, "error")) {
+  # record the failure but still keep the MG results
+  CONV <<- list(
+    call = match.call(),
+    settings = list(nc = nc, N = N, sampN = sampN, n = nrow(dat)),
+    grouping = as.list(table(dat$group)),
+    multiple_group = mg_conv,
+    unidim = list(model = "unidim", ok = FALSE, message = uni_fit$message, iterations = NA),
+    timestamp = Sys.time()
+  )
+  message("Unidimensional mirt failed: ", uni_fit$message)
+  return(invisible(NULL))
+}
+
+uni_conv <- .get_conv(uni_fit, "unidim")
+
+# keep original name for downstream scoring
+uni.mod <- uni_fit
+
+## ---------- save convergence summary globally ----------
+CONV <<- list(
+  call = match.call(),
+  settings = list(nc = nc, N = N, sampN = sampN, n = nrow(dat)),
+  grouping = as.list(table(dat$group)),
+  multiple_group = mg_conv,
+  unidim = uni_conv,
+  timestamp = Sys.time()
+)
+
 
 
 ## EAP MIRT SCORING 
