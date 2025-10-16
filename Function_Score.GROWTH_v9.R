@@ -57,6 +57,26 @@ score.GROWTH<-function(nc,N,sampN,Tpoints,dat) {
   }  
   
   
+  ## ---------- convergence helper ----------
+  .get_conv <- function(fit, label) {
+    if (is.null(fit)) {
+      return(list(model = label, ok = FALSE, message = "fit is NULL", iterations = NA))
+    }
+    oi <- try(fit@OptimInfo, silent = TRUE)
+    ok <- try(isTRUE(oi$converged), silent = TRUE)
+    msg <- try(oi$message, silent = TRUE)
+    it  <- try(oi$iterations, silent = TRUE)
+    list(
+      model = label,
+      ok = if (inherits(ok, "try-error")) NA else ok,
+      message = if (inherits(msg, "try-error")) NA else msg,
+      iterations = if (inherits(it, "try-error")) NA else it
+    )
+  }
+  
+  
+  
+  
   cl <- makeCluster(detectCores()) #use more cores
   
   Ti<-Tpoints
@@ -162,13 +182,37 @@ mod <- paste(object_values, collapse = "\n")
 
 
 #----------------------------------------------------
-#CALIBRATE MIRT
+# CALIBRATE MIRT (growth, Ti timepoints)
 #----------------------------------------------------
-mod.est <- mirt(
-  dat[, 1:(N*Ti)],
-  model = mod,
-  itemtype='graded', method='MHRM', SE = TRUE) 
-coef(mod.est, simplify=TRUE) # get item parameters
+mg_fit <- tryCatch(
+  mirt(
+    dat[, 1:(N*Ti)],
+    model = mod,
+    itemtype = 'graded',
+    method = 'MHRM',
+    SE = TRUE
+  ),
+  error = function(e) e
+)
+
+if (inherits(mg_fit, "error")) {
+  CONV_GROWTH <<- list(
+    call = match.call(),
+    settings = list(nc = nc, N = N, sampN = sampN, Ti = Ti, n = nrow(dat)),
+    growth = list(model = "mirt_growth", ok = FALSE, message = mg_fit$message, iterations = NA),
+    unidim = NULL,
+    timestamp = Sys.time()
+  )
+  message("Growth mirt() failed: ", mg_fit$message)
+  # clean up cluster if you started one
+  try(stopCluster(cl), silent = TRUE)
+  return(invisible(NULL))
+}
+
+growth_conv <- .get_conv(mg_fit, "mirt_growth")
+mod.est <- mg_fit
+coef(mod.est, simplify = TRUE)
+
 
 #----------------------------------------------------
 ## CLEAN UNIDIM
@@ -199,7 +243,38 @@ dat.U<-do.call(rbind, dat.T.list)
 
 ## CALIBRATE UNIDIM
 dat.Unm <- dat.U[!apply(dat.U, 1, function(x) all(is.na(x))), ]
-uni.mod <- mirt(dat.U[,(1:N)], 1, itemtype = "graded")
+uni_fit <- tryCatch(
+  mirt(dat.U[, (1:N)], 1, itemtype = "graded"),
+  error = function(e) e
+)
+
+if (inherits(uni_fit, "error")) {
+  # record the failure but keep growth results
+  CONV_GROWTH <<- list(
+    call = match.call(),
+    settings = list(nc = nc, N = N, sampN = sampN, Ti = Ti, n = nrow(dat)),
+    growth = growth_conv,
+    unidim = list(model = "mirt_unidim", ok = FALSE, message = uni_fit$message, iterations = NA),
+    timestamp = Sys.time()
+  )
+  message("Unidimensional mirt() failed: ", uni_fit$message)
+  try(stopCluster(cl), silent = TRUE)
+  return(invisible(NULL))
+}
+
+uni_conv <- .get_conv(uni_fit, "mirt_unidim")
+uni.mod <- uni_fit
+
+
+# ---------- save convergence summary globally ----------
+CONV_GROWTH <<- list(
+  call = match.call(),
+  settings = list(nc = nc, N = N, sampN = sampN, Ti = Ti, n = nrow(dat)),
+  growth = growth_conv,
+  unidim = uni_conv,
+  timestamp = Sys.time()
+)
+
 
 
 
