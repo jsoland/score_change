@@ -1,6 +1,3 @@
-
-#https://chatgpt.com/c/68cd6bfa-3510-8321-a1aa-11f42e67b729
-
 results.GROWTH <- function(
     score.file,
     plots = TRUE,
@@ -95,13 +92,11 @@ results.GROWTH <- function(
     stop("No matching score columns found for the specified `timepoints`.")
   }
   
-  summary_df <- do.call(rbind, summary_list) %>%
-    arrange(Score_Type, Timepoint)
-  
+  summary_df <- do.call(rbind, summary_list) %>% arrange(Score_Type, Timepoint)
   
   # ---- relabel Score_Type for legend ----
-  summary_df <- summary_df %>%
-    mutate(Score_Type = dplyr::recode(
+  summary_df <- summary_df %>% mutate(
+    Score_Type = dplyr::recode(
       Score_Type,
       "EAPu"     = "EAP.unidim",
       "MLu"      = "ML.unidim",
@@ -109,14 +104,38 @@ results.GROWTH <- function(
       "PVmean"   = "PV.mirt",
       "EAP"      = "EAP.mirt",
       "Sum_std"  = "Sum_stand"
-    ))
+    )
+  )
+  
+  # ---- convergence flag (uses CONV_GROWTH first, falls back to CONV) ----
+  mg_ok  <- tryCatch(isTRUE(CONV_GROWTH$growth$ok),  error = function(e) NA)
+  uni_ok <- tryCatch(isTRUE(CONV_GROWTH$unidim$ok),  error = function(e) NA)
+  if (is.na(mg_ok) && is.na(uni_ok)) {
+    mg_ok  <- tryCatch(isTRUE(CONV$multiple_group$ok), error = function(e) NA)
+    uni_ok <- tryCatch(isTRUE(CONV$unidim$ok),          error = function(e) NA)
+  }
+  nonconv <- isFALSE(mg_ok) | isFALSE(uni_ok)
   
   # ---- optional plot ----
   p <- NULL
   if (plots) {
-    p <- ggplot(summary_df, aes(x = Timepoint, y = Mean, group = Score_Type, linetype = Score_Type)) +
-      geom_line() +
-      geom_point(aes(shape = Score_Type)) +
+    p <- ggplot(summary_df, aes(x = Timepoint, y = Mean, group = Score_Type, linetype = Score_Type))
+    
+    # lines
+    if (isTRUE(nonconv)) {
+      p <- p + geom_line(color = "red")
+    } else {
+      p <- p + geom_line()
+    }
+    
+    # points
+    if (isTRUE(nonconv)) {
+      p <- p + geom_point(aes(shape = Score_Type), color = "red")
+    } else {
+      p <- p + geom_point(aes(shape = Score_Type))
+    }
+    
+    p <- p +
       labs(
         x = "Timepoint",
         y = "Mean score",
@@ -129,16 +148,26 @@ results.GROWTH <- function(
     
     if (quad) {
       # add quadratic trends per series
-      p <- p + geom_smooth(
-        method = "lm",
-        formula = y ~ poly(x, 2),
-        se = FALSE,
-        aes(group = Score_Type)
-      )
+      if (isTRUE(nonconv)) {
+        p <- p + geom_smooth(
+          method = "lm",
+          formula = y ~ poly(x, 2),
+          se = FALSE,
+          aes(group = Score_Type),
+          color = "red"
+        )
+      } else {
+        p <- p + geom_smooth(
+          method = "lm",
+          formula = y ~ poly(x, 2),
+          se = FALSE,
+          aes(group = Score_Type)
+        )
+      }
     }
     
     print(p)
-    plot.1<<-p
+    plot.1 <<- p
   }
   
   # ---- return ----
@@ -147,34 +176,31 @@ results.GROWTH <- function(
   if (plots) out$plot <- p
   invisible(out)
   
-  
   # ---- latent growth curve models (lavaan), incl. MI pooling for PVs ----
   if (!requireNamespace("lavaan", quietly = TRUE)) stop("Please install 'lavaan'.")
   
-  
-    build_lgcm_syntax <- function(varnames, quadratic = FALSE) {
-      # time index 0,1,2,... for linear slope loadings
-      t_idx <- seq_along(varnames) - 1L
-      
-      syn <- paste0(
-        # loadings
-        "i =~ ", paste0("1*", varnames, collapse = " + "), "\n",
-        "s =~ ", paste0(t_idx, "*", varnames, collapse = " + "), "\n",
-        # freely estimate latent means (otherwise lavaan fixes them to 0)
-        "i ~ 1\n",
-        "s ~ 1\n"
-      )
-      
-      if (quadratic) {
-        syn <- paste0(
-          syn,
-          "q =~ ", paste0((t_idx^2), "*", varnames, collapse = " + "), "\n",
-          "q ~ 1\n"
-        )
-      }
-      syn
-    }
+  build_lgcm_syntax <- function(varnames, quadratic = FALSE) {
+    # time index 0,1,2,... for linear slope loadings
+    t_idx <- seq_along(varnames) - 1L
     
+    syn <- paste0(
+      # loadings
+      "i =~ ", paste0("1*", varnames, collapse = " + "), "\n",
+      "s =~ ", paste0(t_idx, "*", varnames, collapse = " + "), "\n",
+      # freely estimate latent means (otherwise lavaan fixes them to 0)
+      "i ~ 1\n",
+      "s ~ 1\n"
+    )
+    
+    if (quadratic) {
+      syn <- paste0(
+        syn,
+        "q =~ ", paste0((t_idx^2), "*", varnames, collapse = " + "), "\n",
+        "q ~ 1\n"
+      )
+    }
+    syn
+  }
   
   extract_core_params <- function(fit, quadratic = FALSE) {
     pe <- lavaan::parameterEstimates(fit, standardized = FALSE)
@@ -321,8 +347,7 @@ results.GROWTH <- function(
   # save into function return
   out$lgcm_estimates <- lgcm_estimates
   
-  lgcm_results<<-lgcm_estimates
-  
+  lgcm_results <<- lgcm_estimates
   
   # ---- Model-based trends for ALL score types (linear & quadratic),
   #      LRT computed ONLY for EAP.mirt (quadratic vs linear) ----
@@ -471,10 +496,14 @@ results.GROWTH <- function(
   
   # Two plots: one for Linear, one for Quadratic (if available), showing ALL score types
   mk_trend_plot <- function(df_pred, title_txt, caption_txt) {
-    ggplot(df_pred, aes(x = Timepoint, y = yhat,
-                        group = Score_Type, linetype = Score_Type, shape = Score_Type)) +
-      geom_line() +
-      geom_point() +
+    g <- ggplot(df_pred, aes(x = Timepoint, y = yhat,
+                             group = Score_Type, linetype = Score_Type, shape = Score_Type))
+    if (isTRUE(nonconv)) {
+      g <- g + geom_line(color = "red") + geom_point(color = "red")
+    } else {
+      g <- g + geom_line() + geom_point()
+    }
+    g +
       labs(x = "Timepoint", y = "Model-based mean", title = title_txt, caption = caption_txt) +
       scale_x_continuous(breaks = seq_len(timepoints)) +
       theme_minimal(base_size = 12) +
@@ -498,11 +527,10 @@ results.GROWTH <- function(
                        list(AllScores_linear = p_all_linear,
                             AllScores_quadratic = p_all_quadratic))
   
-  
-plot.2<<-p_all_linear
-plot.3<<-p_all_quadratic
-  
+  plot.2 <<- p_all_linear
+  plot.3 <<- p_all_quadratic
 }
+
 
 
 results.GROWTH(dat.scores,"True","True",4,"False")
